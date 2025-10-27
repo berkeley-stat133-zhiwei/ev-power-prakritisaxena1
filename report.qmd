@@ -6,29 +6,99 @@ format: typst
 # Example Solution 1
 
 ## **Part 0: libraries**
-
 ```{r}
-
+library(tidyverse)
+library(janitor)
+library(readr)
+library(stringr)
+library(maps)  
+library(scales)
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: Do regional groups (West Coast, East Coast, Midwest, South) differ in renewable energy share and EV registrations in 2023?
 
 ## **Part 2: Data Preparation and Cleaning**
-
 ```{r}
+
+list.files("data")
+
+#ENERGY: build 2023 totals + renewable share
+total23 <- read_csv("data/total-use-2023.csv") %>% clean_names() 
+
+#longer format: one row per state_abbreviation, energy_source)
+energy_long <- total23 %>%
+  pivot_longer(-energy_source, names_to = "state_abb", values_to = "value") %>% mutate(
+    energy_source = str_to_lower(energy_source),is_renew_total = str_detect(energy_source, "total\\s*renewable\\s*[- ]?energy"))
+
+#total energy per state
+state_totals <- energy_long %>% group_by(state_abb) %>% summarize(total_energy = sum(value, na.rm = TRUE), .groups = "drop")
+
+#renewable total per state
+state_renew <- energy_long %>% filter(is_renew_total) %>% select(state_abb, renewable_energy = value)
+
+#map abbrev
+state_lookup <- tibble(state_name = tolower(state.name), state_abb  = tolower(state.abb)) %>% add_row(state_name = "district of columbia", state_abb = "dc")
+
+energy23 <- state_totals %>% left_join(state_renew, by = "state_abb") %>% left_join(state_lookup, by = "state_abb") %>%
+  mutate(state = state_name, renew_share = renewable_energy / total_energy) %>%
+  select(state, state_abb, total_energy, renewable_energy, renew_share)
+
+#EV CLEAN 
+ev23 <- read_csv("data/ev-registrations-by-state-2023.csv") %>% clean_names() %>%
+  rename(state_label = electric_vehicle_registrations_by_state_2023,ev_text = x2) %>%
+  filter(!is.na(state_label), state_label != "STATE") %>%
+  mutate(state = str_to_lower(state_label), ev_registrations = as.numeric(str_replace_all(ev_text, "[^0-9]", ""))) %>%
+  select(state, ev_registrations)
+
+#MERGE AND ADD REGIONS
+data23 <- energy23 %>%
+  left_join(ev23, by = "state") %>%
+  mutate(
+    region_group = case_when(
+      state %in% c("california","oregon","washington") ~ "West Coast",
+      state %in% c("maine","new hampshire","vermont","massachusetts","rhode island","connecticut",
+                   "new york","new jersey","pennsylvania","delaware","maryland",
+                   "district of columbia","virginia","north carolina","south carolina",
+                   "georgia","florida") ~ "East Coast",
+      state %in% c("ohio","michigan","indiana","illinois","wisconsin","minnesota","iowa",
+                   "missouri","kansas","nebraska","north dakota","south dakota") ~ "Midwest",
+      TRUE ~ "South"
+    )
+  )
+
+head(select(data23, state, renew_share, ev_registrations, region_group))
+
 
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
-
 ```{r}
+# regional summaries
+region_summary <- data23 %>% group_by(region_group) %>%
+  summarize(mean_renew_share = mean(renew_share, na.rm = TRUE),mean_ev = mean(ev_registrations, na.rm = TRUE),.groups = "drop")
+region_summary
 
+# bar: average renewable share by region
+ggplot(region_summary, aes(region_group, mean_renew_share, fill = region_group)) +
+  geom_col() + scale_y_continuous(labels = percent) + labs(title = "Average Renewable Share by Region in 2023", x = "Region", y = "Renewable Share")
+
+# bar: average EV registrations by region
+ggplot(region_summary, aes(region_group, mean_ev, fill = region_group)) +
+  geom_col() + labs(title = "Average EV Registrations by Region in 2023", x = "Region", y = "EV Registrations")
 ```
 
 ## **Part 4: Mapping Visualization**
-
 ```{r}
+us_ev <- map_data("state") %>% mutate(state = region)
+map_data23 <- us_ev %>%
+  left_join(data23, by = "state")
+
+# renewable share colored map 
+ggplot(map_data23, aes(long, lat, group = group, fill = renew_share)) +
+  geom_polygon(color = "white", size = 0.2) + coord_fixed(1.3) + scale_fill_continuous(labels = percent) +
+  labs(title = "Renewable Share by State (2023)", fill = "Renew.\nShare")
+
 
 ```
